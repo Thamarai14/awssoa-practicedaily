@@ -16,6 +16,7 @@ from google import genai
 from google.genai import types
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+CHUNK = 5  # questions per API call (smaller calls are more reliable)
 
 # Real exam weights: 28 / 26 / 24 / 22 -> 14 + 13 + 12 + 11 = 50 questions
 DOMAINS = [
@@ -58,7 +59,7 @@ def valid(q) -> bool:
 
 
 def generate(client, domain: str, n: int, topics: list[str], seed: str):
-    focus = ", ".join(random.sample(topics, 6))
+    focus = ", ".join(random.sample(topics, 3))
     prompt = f"""Write {n} NEW, realistic AWS Certified Solutions Architect - Associate (SAA-C03) exam-style
 scenario questions for the domain "{domain}". Seed for variety: {seed}.
 Emphasise these areas (spread across them): {focus}.
@@ -78,8 +79,9 @@ Return ONLY a JSON array of exactly {n} objects:
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=1.0,
-                    max_output_tokens=32000,
+                    max_output_tokens=8000,
                     response_mime_type="application/json",
+                    http_options=types.HttpOptions(timeout=120_000),  # 120 s per call
                 ),
             )
             items = [q for q in extract_json(resp.text) if valid(q)]
@@ -90,7 +92,8 @@ Return ONLY a JSON array of exactly {n} objects:
             last_err = f"only {len(items)} valid questions"
         except Exception as e:  # retry on API, rate-limit or JSON errors
             last_err = e
-        time.sleep(15 * attempt)  # back off for free-tier rate limits
+        print(f"[{domain}] attempt {attempt} failed: {last_err}", flush=True)
+        time.sleep(10 * attempt)  # back off for free-tier rate limits
     raise RuntimeError(f"Generation failed for {domain}: {last_err}")
 
 
@@ -111,7 +114,7 @@ label.right{background:rgba(76,194,110,.18)}
 button{font:inherit;padding:10px 20px;border-radius:8px;border:0;background:#2563eb;color:#fff;cursor:pointer}
 #res{font-size:1.1em;margin:12px 0;font-weight:600}
 </style></head><body>
-<header><div><b>SAA-C03 Practice</b> <span class="tag">__DATE__ - 50 questions</span></div><div id="t">100:00</div></header>
+<header><div><b>SAA-C03 Practice</b> <span class="tag">__DATE__ - __N__ questions</span></div><div id="t">100:00</div></header>
 <div id="qs"></div>
 <button onclick="submitQuiz()">Submit test</button>
 <div id="res"></div>
@@ -155,7 +158,7 @@ function submitQuiz(){
 
 def build_html(questions, date_str: str) -> str:
     data = json.dumps(questions, ensure_ascii=False).replace("</", "<\\/")
-    return HTML.replace("__DATE__", date_str).replace("__DATA__", data)
+    return HTML.replace("__DATE__", date_str).replace("__N__", str(len(questions))).replace("__DATA__", data)
 
 
 def send_mail(path: Path, date_str: str):
@@ -170,7 +173,7 @@ def send_mail(path: Path, date_str: str):
     msg["From"] = user
     msg["To"] = to
     msg.set_content(
-        f"Hi,\n\nYour 50-question SAA-C03 practice test for {date_str} is attached.\n\n"
+        f"Hi,\n\nYour SAA-C03 practice test for {date_str} is attached.\n\n"
         "How to take it:\n"
         "1. Download the attached .html file.\n"
         "2. Open it in Chrome/Edge/Safari (not the mail preview).\n"
@@ -188,9 +191,26 @@ def main():
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
     date_str = now.strftime("%Y-%m-%d")
     client = genai.Client()  # reads GEMINI_API_KEY from the environment
-    questions = []
+    questions, seen = [], set()
     for name, n, topics in DOMAINS:
-        questions += generate(client, name, n, topics, seed=f"{date_str}-{random.randint(1000, 9999)}")
+        remaining = n
+        while remaining > 0:
+            k = min(CHUNK, remaining)
+            remaining -= k
+            try:
+                batch = generate(client, name, k, topics, seed=f"{date_str}-{random.randint(1000, 9999)}")
+            except Exception as e:
+                print(f"Skipping a batch for {name}: {e}", flush=True)
+                continue
+            for q in batch:
+                key = q["question"].lower()[:60]
+                if key not in seen:
+                    seen.add(key)
+                    questions.append(q)
+            print(f"{len(questions)} questions so far", flush=True)
+            time.sleep(5)  # stay under free-tier per-minute limits
+    if len(questions) < 40:
+        raise RuntimeError(f"Only {len(questions)} questions generated - try again later.")
     random.shuffle(questions)
     out = Path("out")
     out.mkdir(exist_ok=True)
