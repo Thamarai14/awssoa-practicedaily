@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 CHUNK = 5  # questions per API call (smaller calls are more reliable)
 
 # Real exam weights: 28 / 26 / 24 / 22 -> 14 + 13 + 12 + 11 = 50 questions
