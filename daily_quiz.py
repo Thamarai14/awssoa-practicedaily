@@ -6,14 +6,16 @@ import random
 import re
 import smtplib
 import sys
+import time
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import anthropic
+from google import genai
+from google.genai import types
 
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
 # Real exam weights: 28 / 26 / 24 / 22 -> 14 + 13 + 12 + 11 = 50 questions
 DOMAINS = [
@@ -69,20 +71,26 @@ Rules:
 Return ONLY a JSON array of exactly {n} objects:
 {{"question": str, "options": [str, ...], "answer": [0-based int, ...], "explanation": str}}"""
     last_err = None
-    for _ in range(3):
+    for attempt in range(1, 5):
         try:
-            msg = client.messages.create(
-                model=MODEL, max_tokens=12000, temperature=1.0,
-                messages=[{"role": "user", "content": prompt}],
+            resp = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=1.0,
+                    max_output_tokens=32000,
+                    response_mime_type="application/json",
+                ),
             )
-            items = [q for q in extract_json(msg.content[0].text) if valid(q)]
+            items = [q for q in extract_json(resp.text) if valid(q)]
             if len(items) >= n - 1:
                 for q in items:
                     q["domain"] = domain
                 return items[:n]
             last_err = f"only {len(items)} valid questions"
-        except Exception as e:  # retry on API or JSON errors
+        except Exception as e:  # retry on API, rate-limit or JSON errors
             last_err = e
+        time.sleep(15 * attempt)  # back off for free-tier rate limits
     raise RuntimeError(f"Generation failed for {domain}: {last_err}")
 
 
@@ -179,7 +187,7 @@ def send_mail(path: Path, date_str: str):
 def main():
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
     date_str = now.strftime("%Y-%m-%d")
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+    client = genai.Client()  # reads GEMINI_API_KEY from the environment
     questions = []
     for name, n, topics in DOMAINS:
         questions += generate(client, name, n, topics, seed=f"{date_str}-{random.randint(1000, 9999)}")
