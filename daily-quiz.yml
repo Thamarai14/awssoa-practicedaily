@@ -1,0 +1,34 @@
+name: Daily SAA-C03 practice test
+
+on:
+  schedule:
+    - cron: "30 0 * * *"   # 00:30 UTC = 06:00 IST every day
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+
+jobs:
+  send-quiz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Generate and email today's test
+        run: python daily_quiz.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+
+      - name: Keep a copy of the test
+        uses: actions/upload-artifact@v4
+        with:
+          name: saa-c03-practice
+          path: out/
+          retention-days: 14
